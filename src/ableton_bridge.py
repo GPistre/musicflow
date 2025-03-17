@@ -251,10 +251,11 @@ class AbletonBridge:
                 
                 print(f"Successfully loaded notes into clip!")
                 
-                # Automatically play the clip
+                # Automatically play the clip with the correct command
                 try:
                     print(f"Starting playback of clip...")
-                    self.client.send_message("/live/clip/play", [track_index, slot_index])
+                    # Use the fire method to play the clip
+                    self.client.send_message("/live/clip/fire", [track_index, slot_index])
                     time.sleep(0.1)  # Brief pause
                     
                     # Also try to start global playback
@@ -295,10 +296,12 @@ class AbletonBridge:
             return False
         
         try:
-            # Try to play the clip via OSC
-            self.client.send_message("/live/play_clip", [track_index, slot])
-            print(f"Sent play command for track {track_name} (index {track_index})")
-            print("Note: You may need to arm the track and start playback manually in Ableton")
+            # Try to play the clip via OSC using the fire method
+            self.client.send_message("/live/clip/fire", [track_index, slot])
+            print(f"Fired clip in track {track_name} (index {track_index})")
+            
+            # Also try to start global playback
+            self.client.send_message("/live/play", [1])
             return True
         except Exception as e:
             print(f"Error playing clip: {e}")
