@@ -200,14 +200,31 @@ class AbletonBridge:
         try:
             print(f"Attempting to load MIDI file into Ableton Live...")
             
-            # First, try to create a new clip in the clip slot
+            # First, try to delete any existing clip in the slot
             slot_index = 0  # Use the first clip slot
             clip_length = 4.0  # Default length in bars
             
-            # Try to create a clip in the slot
+            # Delete any existing clip first
+            try:
+                print(f"Deleting any existing clip in track {track_name} (index {track_index})")
+                self.client.send_message("/live/clip_slot/delete_clip", [track_index, slot_index])
+                time.sleep(0.3)  # Give Ableton time to process
+            except Exception as delete_error:
+                print(f"Note: Error deleting clip (this is normal if no clip exists): {delete_error}")
+            
+            # Try to create a new clip in the slot
             print(f"Creating a new clip in track {track_name} (index {track_index})")
-            self.client.send_message("/live/clip_slot/create_clip", [track_index, slot_index, clip_length])
-            time.sleep(0.5)  # Give Ableton time to process
+            try:
+                self.client.send_message("/live/clip_slot/create_clip", [track_index, slot_index, clip_length])
+                time.sleep(0.5)  # Give Ableton time to process
+            except Exception as create_error:
+                # If we can't create a clip, maybe one already exists - try to clear it
+                print(f"Could not create new clip, attempting to clear existing clip: {create_error}")
+                try:
+                    self.client.send_message("/live/clip/clear", [track_index, slot_index])
+                    time.sleep(0.3)
+                except Exception:
+                    pass  # Ignore errors from clearing
             
             # Now try to load the MIDI file directly
             import pretty_midi
