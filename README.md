@@ -1,12 +1,12 @@
 # MusicFlow
 
-An interactive MIDI generation tool that uses natural language prompts to create music.
+An interactive MIDI generation tool that uses natural language prompts to create music with direct Ableton Live integration.
 
 ## Overview
 
 MusicFlow allows you to generate MIDI tracks for different parts of a song (drums, bass, lead, etc.) using natural language descriptions. For example, you can ask for "a funky 4/4 bassline with syncopation" or "a minimal techno kick pattern with occasional snares".
 
-Each track is generated separately and can be updated with new prompts, enabling an interactive music production experience.
+Each track is generated separately and can be updated with new prompts, enabling an interactive music production experience. Generated tracks can be automatically loaded into Ableton Live for immediate playback and further production.
 
 ## Features
 
@@ -15,11 +15,13 @@ Each track is generated separately and can be updated with new prompts, enabling
 - Update existing tracks with new prompts
 - Conversational interface for intuitive interaction
 - Exports standard MIDI files that can be imported into any DAW
+- **Direct Ableton Live integration** for immediate playback and production
 
 ## Requirements
 
 - Python 3.9+
 - Conda (for environment management)
+- Ableton Live 11 Suite (for Ableton Live integration)
 
 ## Installation
 
@@ -41,6 +43,14 @@ Each track is generated separately and can be updated with new prompts, enabling
    ```
    Then edit the `.env` file to add your OpenAI API key.
 
+4. For Ableton Live integration:
+   - Ensure Ableton Live 11 is installed
+   - Install an OSC plugin for Ableton Live:
+     - [LiveOSC2](https://github.com/stujay/LiveOSC2) (Recommended)
+     - [OSCulation](https://osculator.net/) for more advanced mapping
+   - Configure the OSC plugin to send/receive on ports 11000/11001
+   - Start Ableton Live with the plugin enabled before connecting
+
 ## Usage
 
 Run the CLI:
@@ -51,6 +61,8 @@ python musicflow.py
 
 ### Commands
 
+#### MIDI Generation
+
 - Generate a track: `generate [track_name]: [prompt]`
   Example: `generate bass: funky bassline in G minor with syncopation`
 
@@ -59,8 +71,21 @@ python musicflow.py
 
 - List tracks: `list`
 
-- Help: `help`
+#### Ableton Live Integration
 
+- Connect to Ableton Live: `ableton connect`
+- Show Ableton connection status: `ableton status`
+- Disconnect from Ableton: `ableton disconnect`
+
+- Load track into Ableton: `load [track_name]`
+- Load all tracks into Ableton: `load all`
+
+- Play a track in Ableton: `play [track_name]`
+- Play all tracks: `play all`
+- Stop a track: `stop [track_name]`
+- Stop all playback: `stop all`
+
+- Help: `help`
 - Exit: `exit`
 
 ## Example Session
@@ -76,11 +101,79 @@ Description: A standard 4/4 techno beat with kick drums on every quarter note an
 MIDI file: ./output/bass.mid
 Description: A deep sub bass in F minor with occasional pitch slides between notes, focusing on the root and fifth.
 
+> ableton connect
+✓ Connected to Ableton Live
+
+> load all
+Loading 2 tracks into Ableton Live...
+✓ Loaded drums
+✓ Loaded bass
+Finished loading tracks into Ableton Live
+
+> play all
+Playing all tracks...
+✓ Playing all tracks
+
 > update drums: add snare on beats 2 and 4
 ✓ Updated drums track
 MIDI file: ./output/drums.mid
 Description: Updated 4/4 techno beat with kick on every beat, offbeat hi-hats, and snare hits on beats 2 and 4.
+Reload this track in Ableton Live? [y/n] (y): y
+Loading drums into Ableton Live...
+✓ Loaded drums into Ableton Live
 ```
+
+## Ableton Live Integration Details
+
+MusicFlow integrates with Ableton Live using Open Sound Control (OSC), allowing you to:
+
+1. Generate MIDI tracks with natural language prompts
+2. Create tracks in Ableton Live automatically
+3. Load MIDI files into Ableton (with some manual steps)
+4. Play/stop individual tracks or the entire session
+5. Update tracks and reload them into Ableton
+
+### Setting up OSC with Ableton Live
+
+To enable the Ableton Live integration:
+
+1. Install AbletonOSC:
+   - Download from: https://github.com/ideoforms/AbletonOSC/releases
+   - Follow the installation instructions from the documentation
+
+2. Configure AbletonOSC:
+   - Launch Ableton Live
+   - Open the AbletonOSC plugin
+   - Set listening port to 11000
+   - Start the OSC server from the plugin interface
+
+3. In MusicFlow, use `ableton connect` to establish the connection
+
+### Working with Generated MIDI Files
+
+The Ableton Live integration attempts to automatically load MIDI files using OSC commands, but fallbacks to a hybrid workflow if needed:
+
+#### Automatic Mode (Attempted First)
+MusicFlow will try to use advanced OSC commands (`/live/clip_slot/create_clip` and `/live/clip/add/notes`) to:
+
+1. Create a new clip in the specified track
+2. Add all MIDI notes from the generated file directly to the clip
+
+If this works, you'll see notes being added in real-time in Ableton Live.
+
+#### Manual Fallback (If Automatic Fails)
+
+If automatic loading fails (which may happen depending on your AbletonOSC version):
+
+1. Generate MIDI files with natural language prompts in MusicFlow
+2. MusicFlow will create the MIDI files in the `output` directory
+3. Use the `load` command to register a virtual track in the system
+4. Manually create a track in Ableton Live with the same name
+5. Drag the generated MIDI file into the track in Ableton
+
+The playback commands will attempt to control Ableton, but you may need to manually start/stop playback in Ableton depending on your OSC implementation.
+
+This flexible approach allows for rapid iteration on musical ideas through the conversational interface while leveraging Ableton Live's powerful audio engine.
 
 ## License
 
