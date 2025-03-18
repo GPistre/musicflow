@@ -5,8 +5,13 @@ from typing import Optional, Dict, Any, List
 from rich.console import Console
 from rich.markdown import Markdown
 from rich.panel import Panel
-from rich.prompt import Prompt
 from rich.table import Table
+
+from prompt_toolkit import PromptSession
+from prompt_toolkit.history import FileHistory
+from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
+from prompt_toolkit.completion import WordCompleter
+from prompt_toolkit.styles import Style
 
 from .midi_generator import MIDIGenerator
 from .ableton_bridge import AbletonBridge, run_async
@@ -20,6 +25,38 @@ class MusicFlowCLI:
         self.ableton = AbletonBridge()
         self.ableton_connected = False
         self.running = True
+        
+        # Set up history file in user's home directory
+        history_file = os.path.expanduser("~/.musicflow_history")
+        self.prompt_session = PromptSession(
+            history=FileHistory(history_file),
+            auto_suggest=AutoSuggestFromHistory(),
+            enable_history_search=True,
+            complete_style="readline"
+        )
+        
+        # Set up command completer
+        self.command_completer = WordCompleter([
+            'generate', 'update', 'list', 'help', 'exit', 'quit',
+            'play', 'stop', 'load', 'ableton status'
+        ], ignore_case=True)
+        
+        # Set up prompt style
+        self.prompt_style = Style.from_dict({
+            'prompt': 'bold green',
+        })
+        
+        # Auto-connect to Ableton on startup
+        self.console.print("[bold]Connecting to Ableton Live...[/bold]")
+        with self.console.status("Connecting..."):
+            success = run_async(self.ableton.connect)
+        
+        if success:
+            self.ableton_connected = True
+            self.console.print("[bold green]✓[/bold green] Connected to Ableton Live")
+        else:
+            self.console.print("[yellow]Could not connect to Ableton Live. Some features will be limited.[/yellow]")
+            self.console.print("[yellow]You can still generate MIDI files, but they won't auto-load into Ableton.[/yellow]")
     
     def welcome(self):
         """Display welcome message"""
@@ -31,9 +68,10 @@ class MusicFlowCLI:
         - Update tracks: `update drums: add more hi-hats`
         - List tracks: `list`
         - Play in Ableton: `play drums` or `play all`
-        - Connect to Ableton: `ableton connect`
         - Help: `help`
         - Exit: `exit`
+        
+        Tracks are automatically loaded into Ableton Live when created or updated!
         """
         
         self.console.print(Panel(Markdown(welcome_message), title="MusicFlow", border_style="green"))
@@ -45,25 +83,32 @@ class MusicFlowCLI:
         
         - `generate [track_name]: [prompt]` - Generate a new MIDI track
           Example: `generate bass: funky bassline in G minor`
+          
+          You can specify clip length in the prompt:
+          Example: `generate lead: 8-bar melodic lead in C major`
         
         - `update [track_name]: [prompt]` - Update an existing track
           Example: `update drums: make the kick pattern more interesting`
+          
+          You can change clip length during update:
+          Example: `update bass: extend to 16 bars with more variation`
         
         - `list` - List all currently generated tracks
         
         ## Ableton Live Integration
         
-        - `ableton connect` - Connect to Ableton Live
-        - `ableton disconnect` - Disconnect from Ableton Live
-        - `ableton status` - Show connection status
+        Ableton Live is automatically connected at startup. Tracks are automatically loaded
+        into Ableton and played when created or updated.
         
-        - `load [track_name]` - Load a track into Ableton Live
+        - `ableton status` - Show Ableton connection status
+        - `load [track_name]` - Manually load a track into Ableton Live
         - `load all` - Load all tracks into Ableton Live
         
         - `play [track_name]` - Play a specific track in Ableton
         - `play all` - Play all tracks in Ableton
         - `stop [track_name]` - Stop a specific track
         - `stop all` - Stop all playback
+        - `reset all` - Delete all tracks and clips (use with caution)
         
         - `help` - Display this help message
         
@@ -107,7 +152,8 @@ class MusicFlowCLI:
                 self.console.print("[yellow]Example: update drums: add more hi-hats[/yellow]")
         # Ableton commands
         elif user_input.lower() == "ableton connect":
-            self.connect_to_ableton()
+            self.console.print("Ableton is automatically connected at startup.")
+            self.console.print("If you need to reconnect, please restart the application.")
         elif user_input.lower() == "ableton disconnect":
             self.disconnect_from_ableton()
         elif user_input.lower() == "ableton status":
@@ -130,6 +176,8 @@ class MusicFlowCLI:
                 self.stop_all_tracks()
             else:
                 self.stop_track(track_name)
+        elif user_input.lower() == "reset all":
+            self.reset_all()
         else:
             # Treat as a direct generation prompt without specifying track type
             self.generate_track(user_input)
@@ -137,6 +185,29 @@ class MusicFlowCLI:
     def generate_track(self, prompt: str, track_name: Optional[str] = None):
         """Generate a new MIDI track"""
         self.console.print(f"[bold green]Generating {track_name or 'track'} from prompt:[/bold green] {prompt}")
+        
+        # Display existing track context if available
+        existing_tracks = self.midi_generator.list_tracks()
+        if existing_tracks:
+            context_table = Table(title="Existing Tracks (Context for Generation)")
+            context_table.add_column("Track", style="cyan")
+            context_table.add_column("BPM", style="magenta")
+            context_table.add_column("Time Sig", style="magenta")
+            context_table.add_column("Bars", style="magenta")
+            context_table.add_column("Description", style="green")
+            
+            for track in existing_tracks:
+                track_data = self.midi_generator.tracks[track]
+                context_table.add_row(
+                    track,
+                    str(track_data.get("bpm", 120)),
+                    track_data.get("time_signature", "4/4"),
+                    str(track_data.get("clip_length", 4)),
+                    track_data.get("description", "No description")[:50] + "..." if len(track_data.get("description", "")) > 50 else track_data.get("description", "No description")
+                )
+            
+            self.console.print(context_table)
+            self.console.print("[italic]New track will be generated to complement these existing tracks.[/italic]\n")
         
         with self.console.status("Generating MIDI..."):
             result = self.midi_generator.generate_track(prompt, track_name)
@@ -147,6 +218,9 @@ class MusicFlowCLI:
         
         self.console.print(f"[bold green]✓[/bold green] Created {result['track_name']} track")
         self.console.print(f"[bold]MIDI file:[/bold] {result['midi_file']}")
+        self.console.print(f"[bold]BPM:[/bold] {result['details'].get('bpm', 120)}")
+        self.console.print(f"[bold]Time Signature:[/bold] {result['details'].get('time_signature', '4/4')}")
+        self.console.print(f"[bold]Clip Length:[/bold] {result['details'].get('clip_length', 4)} bars")
         self.console.print(f"[bold]Description:[/bold] {result['details'].get('description', 'No description')}")
         
         # If Ableton is connected, automatically load the track
@@ -165,6 +239,42 @@ class MusicFlowCLI:
         
         self.console.print(f"[bold green]Updating {track_name} with prompt:[/bold green] {prompt}")
         
+        # Display detailed information about the track being updated
+        target_track_data = self.midi_generator.tracks[track_name]
+        track_panel = Panel(
+            f"Track: [bold]{track_name}[/bold]\n"
+            f"BPM: {target_track_data.get('bpm', 120)}\n"
+            f"Time Signature: {target_track_data.get('time_signature', '4/4')}\n"
+            f"Clip Length: {target_track_data.get('clip_length', 4)} bars\n"
+            f"Description: {target_track_data.get('description', 'No description')}",
+            title="Track to Update",
+            border_style="yellow"
+        )
+        self.console.print(track_panel)
+        
+        # Display other tracks as context
+        other_tracks = [t for t in tracks if t != track_name]
+        if other_tracks:
+            context_table = Table(title="Other Tracks (Context for Update)")
+            context_table.add_column("Track", style="cyan")
+            context_table.add_column("BPM", style="magenta")
+            context_table.add_column("Time Sig", style="magenta")
+            context_table.add_column("Bars", style="magenta")
+            context_table.add_column("Description", style="green")
+            
+            for track in other_tracks:
+                track_data = self.midi_generator.tracks[track]
+                context_table.add_row(
+                    track,
+                    str(track_data.get("bpm", 120)),
+                    track_data.get("time_signature", "4/4"),
+                    str(track_data.get("clip_length", 4)),
+                    track_data.get("description", "No description")[:50] + "..." if len(track_data.get("description", "")) > 50 else track_data.get("description", "No description")
+                )
+            
+            self.console.print(context_table)
+            self.console.print("[italic]Update will maintain compatibility with these tracks.[/italic]\n")
+        
         with self.console.status("Updating MIDI..."):
             result = self.midi_generator.update_track(track_name, prompt)
         
@@ -174,6 +284,9 @@ class MusicFlowCLI:
         
         self.console.print(f"[bold green]✓[/bold green] Updated {result['track_name']} track")
         self.console.print(f"[bold]MIDI file:[/bold] {result['midi_file']}")
+        self.console.print(f"[bold]BPM:[/bold] {result['details'].get('bpm', 120)}")
+        self.console.print(f"[bold]Time Signature:[/bold] {result['details'].get('time_signature', '4/4')}")
+        self.console.print(f"[bold]Clip Length:[/bold] {result['details'].get('clip_length', 4)} bars")
         self.console.print(f"[bold]Description:[/bold] {result['details'].get('description', 'No description')}")
         
         # If Ableton is connected, automatically reload the track
@@ -395,13 +508,94 @@ class MusicFlowCLI:
         else:
             self.console.print("[bold red]Error:[/bold red] Could not stop playback")
     
+    def reset_all(self):
+        """Reset everything - clear all tracks and clips"""
+        from rich.prompt import Confirm
+        
+        # Confirm the action since it's destructive
+        confirm = Confirm.ask("⚠️  [bold red]This will delete all tracks and clips. Are you sure?[/bold red]")
+        if not confirm:
+            self.console.print("[yellow]Reset cancelled.[/yellow]")
+            return
+        
+        # Clear MIDI generator tracks
+        self.console.print("[bold]Clearing all generated tracks...[/bold]")
+        self.midi_generator.tracks = {}
+        
+        # Clear Ableton clips if connected
+        if self.ableton_connected:
+            self.console.print("[bold]Clearing all clips in Ableton Live...[/bold]")
+            
+            # First stop all playback
+            run_async(self.ableton.stop_all)
+            
+            with self.console.status("Clearing clips..."):
+                # For each track in Ableton, try to delete clips
+                for track_name, track_index in self.ableton.tracks_map.items():
+                    try:
+                        # Delete clip in slot 0 (our default slot)
+                        self.ableton.client.send_message("/live/clip_slot/delete_clip", [track_index, 0])
+                        self.console.print(f"[green]Cleared clip in track {track_name}[/green]")
+                    except Exception as e:
+                        self.console.print(f"[yellow]Could not clear clip in track {track_name}: {e}[/yellow]")
+            
+            # Reset track mappings
+            self.ableton.tracks_map = {}
+        
+        self.console.print("[bold green]✓[/bold green] Reset complete. All tracks and clips have been cleared.")
+    
+    def _get_dynamic_completer(self):
+        """Get a completer with current track names"""
+        # Start with the basic commands
+        commands = [
+            'generate', 'update', 'list', 'help', 'exit', 'quit',
+            'play', 'stop', 'load', 'ableton status', 'reset all'
+        ]
+        
+        # Add track-specific commands
+        track_names = self.midi_generator.list_tracks()
+        for track in track_names:
+            commands.append(f"play {track}")
+            commands.append(f"stop {track}")
+            commands.append(f"load {track}")
+            commands.append(f"update {track}:")
+        
+        # Add "all" options
+        commands.append("play all")
+        commands.append("stop all")
+        commands.append("load all")
+        
+        return WordCompleter(commands, ignore_case=True)
+        
     def run(self):
         """Run the CLI interface"""
         self.welcome()
         
         while self.running:
-            user_input = Prompt.ask("\n[bold green]MusicFlow>[/bold green]")
-            self.parse_command(user_input)
+            try:
+                # Get dynamic completer with current track names
+                dynamic_completer = self._get_dynamic_completer()
+                
+                # Get user input with advanced editing features
+                user_input = self.prompt_session.prompt(
+                    [('class:prompt', '\nMusicFlow> ')],
+                    completer=dynamic_completer,
+                    style=self.prompt_style,
+                    complete_while_typing=True
+                )
+                
+                # Parse and execute the command
+                if user_input.strip():  # Only process non-empty input
+                    self.parse_command(user_input)
+            except KeyboardInterrupt:
+                # Handle Ctrl+C gracefully
+                self.console.print("\n[yellow]Operation cancelled.[/yellow]")
+                continue
+            except EOFError:
+                # Handle Ctrl+D (EOF) to exit
+                self.console.print("\n[yellow]Exiting...[/yellow]")
+                self.running = False
+                break
         
         self.console.print("[bold]Thanks for using MusicFlow![/bold]")
 

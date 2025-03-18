@@ -202,7 +202,14 @@ class AbletonBridge:
             
             # First, try to delete any existing clip in the slot
             slot_index = 0  # Use the first clip slot
+            
+            # Try to extract clip length from filename
             clip_length = 4.0  # Default length in bars
+            import re
+            # Look for patterns like "_4bars.mid" or "_8_bars.mid"
+            bar_match = re.search(r'_(\d+)bars', os.path.basename(midi_file))
+            if bar_match:
+                clip_length = float(bar_match.group(1))
             
             # Delete any existing clip first
             try:
@@ -251,6 +258,48 @@ class AbletonBridge:
                 
                 print(f"Successfully loaded notes into clip!")
                 
+                # Calculate clip length from the MIDI file
+                time_sig_numerator = 4  # Default to 4/4
+                clip_length_bars = 4    # Default to 4 bars
+                
+                # Try to extract time signature and clip length from filename
+                import re
+                # Look for patterns like "_4bars.mid" or "_8_bars.mid"
+                bar_match = re.search(r'_(\d+)bars', os.path.basename(midi_file))
+                if bar_match:
+                    clip_length_bars = int(bar_match.group(1))
+                
+                # Calculate loop end in beats - make sure to send exact values
+                loop_end_beats = float(clip_length_bars * time_sig_numerator)
+                
+                # Set the loop start and end points
+                print(f"Setting loop end to {loop_end_beats} beats ({clip_length_bars} bars)")
+                try:
+                    # Set loop start to 0
+                    self.client.send_message("/live/clip/set/loop_start", [track_index, slot_index, 0.0])
+                    time.sleep(0.2)  # Give a bit more time for processing
+                    
+                    # Set loop end to match the clip length
+                    self.client.send_message("/live/clip/set/loop_end", [track_index, slot_index, loop_end_beats])
+                    time.sleep(0.2)  # Give a bit more time for processing
+                    
+                    # Enable looping
+                    self.client.send_message("/live/clip/set/looping", [track_index, slot_index, 1])
+                    time.sleep(0.1)
+                    
+                    # Set clip length explicitly 
+                    try:
+                        # Some AbletonOSC versions support setting clip length directly
+                        self.client.send_message("/live/clip/set/length", [track_index, slot_index, loop_end_beats])
+                    except Exception:
+                        # Ignore if this command is not supported
+                        pass
+                    
+                    print("Loop settings applied successfully")
+                except Exception as loop_error:
+                    print(f"Could not set loop points: {loop_error}")
+                    print("You may need to manually set the loop points in Ableton Live")
+                
                 # Automatically play the clip with the correct command
                 try:
                     print(f"Starting playback of clip...")
@@ -259,7 +308,7 @@ class AbletonBridge:
                     time.sleep(0.1)  # Brief pause
                     
                     # Also try to start global playback
-                    self.client.send_message("/live/play", [1])
+                    self.client.send_message("/live/song/start_playing", [1])
                 except Exception as play_error:
                     print(f"Note: Could not auto-play clip: {play_error}")
                 
@@ -301,7 +350,7 @@ class AbletonBridge:
             print(f"Fired clip in track {track_name} (index {track_index})")
             
             # Also try to start global playback
-            self.client.send_message("/live/play", [1])
+            self.client.send_message("/live/song/start_playing", [1])
             return True
         except Exception as e:
             print(f"Error playing clip: {e}")
@@ -320,7 +369,7 @@ class AbletonBridge:
         
         try:
             # Try to stop the clip via OSC
-            self.client.send_message("/live/stop_clip", [track_index, slot])
+            self.client.send_message("/live/song/stop_playing_clip", [track_index, slot])
             print(f"Sent stop command for track {track_name} (index {track_index})")
             return True
         except Exception as e:
@@ -355,7 +404,7 @@ class AbletonBridge:
         
         try:
             # Attempt to start global playback
-            self.client.send_message("/live/play", [1])
+            self.client.send_message("/live/song/start_playing", [1])
             print("Sent play command to Ableton Live")
             print("Note: You may need to start playback manually in Ableton")
             return True
@@ -371,7 +420,7 @@ class AbletonBridge:
         
         try:
             # Attempt to stop global playback
-            self.client.send_message("/live/stop", [1])
+            self.client.send_message("/live/song/stop_playing", [1])
             print("Sent stop command to Ableton Live")
             return True
         except Exception as e:

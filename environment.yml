@@ -16,3 +16,4 @@ dependencies:
     - isort>=5.12.0
     - python-rtmidi>=1.4.9
     - python-osc>=1.8.0    # For OSC communication with Ableton
+    - prompt_toolkit>=3.0.0  # For improved command-line input with history and editing

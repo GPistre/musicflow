@@ -45,7 +45,7 @@ class LLMGenerator:
                 model=self.model,
                 messages=self.conversation_history,
                 response_format={"type": "json_object"},
-                temperature=0.7,
+                temperature=0.8,  # Slightly more creative for music generation
             )
             
             # Parse the JSON response

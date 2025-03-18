@@ -45,11 +45,10 @@ Each track is generated separately and can be updated with new prompts, enabling
 
 4. For Ableton Live integration:
    - Ensure Ableton Live 11 is installed
-   - Install an OSC plugin for Ableton Live:
-     - [LiveOSC2](https://github.com/stujay/LiveOSC2) (Recommended)
-     - [OSCulation](https://osculator.net/) for more advanced mapping
-   - Configure the OSC plugin to send/receive on ports 11000/11001
-   - Start Ableton Live with the plugin enabled before connecting
+   - Install AbletonOSC plugin for Ableton Live:
+     - Download from: https://github.com/ideoforms/AbletonOSC/releases
+   - Configure AbletonOSC to listen on port 11000
+   - Start Ableton Live with AbletonOSC enabled before starting MusicFlow
 
 ## Usage
 
@@ -73,14 +72,13 @@ python musicflow.py
 
 #### Ableton Live Integration
 
-- Connect to Ableton Live: `ableton connect`
-- Show Ableton connection status: `ableton status`
-- Disconnect from Ableton: `ableton disconnect`
+MusicFlow automatically connects to Ableton Live on startup and automatically loads tracks when they're generated.
 
-- Load track into Ableton: `load [track_name]`
+- Show Ableton connection status: `ableton status`
+- Manually load track into Ableton: `load [track_name]`
 - Load all tracks into Ableton: `load all`
 
-- Play a track in Ableton: `play [track_name]`
+- Play a specific track in Ableton: `play [track_name]`
 - Play all tracks: `play all`
 - Stop a track: `stop [track_name]`
 - Stop all playback: `stop all`
@@ -96,31 +94,31 @@ python musicflow.py
 MIDI file: ./output/drums.mid
 Description: A standard 4/4 techno beat with kick drums on every quarter note and hi-hats on the offbeats (8th notes).
 
+Automatically loading track into Ableton Live...
+Creating a new clip in track drums (index 0)
+Successfully loaded notes into clip!
+Starting playback of clip...
+
 > generate bass: deep sub bass in F minor with occasional slides
 ✓ Created bass track
 MIDI file: ./output/bass.mid
 Description: A deep sub bass in F minor with occasional pitch slides between notes, focusing on the root and fifth.
 
-> ableton connect
-✓ Connected to Ableton Live
-
-> load all
-Loading 2 tracks into Ableton Live...
-✓ Loaded drums
-✓ Loaded bass
-Finished loading tracks into Ableton Live
-
-> play all
-Playing all tracks...
-✓ Playing all tracks
+Automatically loading track into Ableton Live...
+Creating a new clip in track bass (index 1)
+Successfully loaded notes into clip!
+Starting playback of clip...
 
 > update drums: add snare on beats 2 and 4
 ✓ Updated drums track
 MIDI file: ./output/drums.mid
 Description: Updated 4/4 techno beat with kick on every beat, offbeat hi-hats, and snare hits on beats 2 and 4.
-Reload this track in Ableton Live? [y/n] (y): y
-Loading drums into Ableton Live...
-✓ Loaded drums into Ableton Live
+
+Automatically reloading track in Ableton Live...
+Deleting any existing clip in track drums (index 0)
+Creating a new clip in track drums (index 0)
+Successfully loaded notes into clip!
+Starting playback of clip...
 ```
 
 ## Ableton Live Integration Details
@@ -147,7 +145,7 @@ To enable the Ableton Live integration:
    - Set listening port to 11000
    - Start the OSC server from the plugin interface
 
-3. In MusicFlow, use `ableton connect` to establish the connection
+3. Start MusicFlow, which will automatically connect to Ableton
 
 ### Working with Generated MIDI Files
 
