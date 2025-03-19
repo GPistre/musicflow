@@ -1,11 +1,16 @@
 import os
 import sys
-from typing import Optional, Dict, Any, List
+import time
+import threading
+from typing import Optional, Dict, Any, List, Tuple
 
 from rich.console import Console
 from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.table import Table
+from rich.status import Status
+from rich.live import Live
+from rich import box
 
 from prompt_toolkit import PromptSession
 from prompt_toolkit.history import FileHistory
@@ -13,7 +18,7 @@ from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
 from prompt_toolkit.completion import WordCompleter
 from prompt_toolkit.styles import Style
 
-from .midi_generator import MIDIGenerator
+from .midi_generator import MIDIGenerator, TrackStatus
 from .ableton_bridge import AbletonBridge, run_async
 
 class MusicFlowCLI:
@@ -25,6 +30,14 @@ class MusicFlowCLI:
         self.ableton = AbletonBridge()
         self.ableton_connected = False
         self.running = True
+        
+        # Task tracking
+        self.task_status_lock = threading.RLock()
+        self.task_status_thread = None
+        self.show_task_status = False
+        self.task_callbacks = {}  # Map of task_id to callback functions
+        self.last_status_update = 0
+        self.pending_notifications = []  # Messages to show when user returns to prompt
         
         # Set up history file in user's home directory
         history_file = os.path.expanduser("~/.musicflow_history")
@@ -38,7 +51,8 @@ class MusicFlowCLI:
         # Set up command completer
         self.command_completer = WordCompleter([
             'generate', 'update', 'list', 'help', 'exit', 'quit',
-            'play', 'stop', 'load', 'ableton status'
+            'play', 'stop', 'load', 'ableton status', 'status',
+            'tasks', 'cancel'
         ], ignore_case=True)
         
         # Set up prompt style
@@ -58,6 +72,68 @@ class MusicFlowCLI:
             self.console.print("[yellow]Could not connect to Ableton Live. Some features will be limited.[/yellow]")
             self.console.print("[yellow]You can still generate MIDI files, but they won't auto-load into Ableton.[/yellow]")
     
+    def _on_task_complete(self, task_id: str, result: Dict[str, Any]):
+        """Handle task completion"""
+        with self.task_status_lock:
+            # Store task notification for display when user is back at prompt
+            if "error" in result:
+                message = f"[bold red]Error in task {task_id}:[/bold red] {result['error']}"
+            else:
+                track_name = result.get('track_name', 'Unknown')
+                message = f"[bold green]✓[/bold green] Completed {track_name} generation"
+                
+                # Auto-load to Ableton if connected
+                if self.ableton_connected:
+                    message += " (Auto-loading to Ableton...)"
+                    self.load_track_to_ableton(track_name)
+            
+            self.pending_notifications.append(message)
+            
+            # If user defined a specific callback, call it
+            if task_id in self.task_callbacks:
+                try:
+                    callback = self.task_callbacks.pop(task_id)
+                    callback(task_id, result)
+                except Exception as e:
+                    print(f"Error in callback: {e}")
+    
+    def _build_task_status_table(self) -> Table:
+        """Build a table showing status of active tasks"""
+        tasks = self.midi_generator.list_tasks()
+        if not tasks:
+            return None
+            
+        table = Table(box=box.ROUNDED, expand=False, title="Active Tasks", title_style="bold blue")
+        table.add_column("Track", style="cyan")
+        table.add_column("Status", style="green")
+        table.add_column("Duration", style="yellow")
+        table.add_column("Type", style="magenta")
+        
+        for task in tasks:
+            track_name = task['track_name']
+            status = task['status']
+            duration = task['duration']
+            task_type = "Update" if task['is_update'] else "Generate"
+            
+            # Format duration
+            duration_str = f"{duration:.1f}s" if duration < 60 else f"{int(duration // 60)}m {int(duration % 60)}s"
+            
+            # Style based on status
+            if status == "COMPLETED":
+                status_style = "[green]COMPLETED[/green]"
+            elif status == "GENERATING":
+                status_style = "[blue]GENERATING[/blue]"
+            elif status == "PENDING":
+                status_style = "[yellow]PENDING[/yellow]"
+            elif status == "FAILED":
+                status_style = "[red]FAILED[/red]"
+            else:
+                status_style = status
+                
+            table.add_row(track_name, status_style, duration_str, task_type)
+        
+        return table
+    
     def welcome(self):
         """Display welcome message"""
         welcome_message = """
@@ -70,6 +146,10 @@ class MusicFlowCLI:
         - Play in Ableton: `play drums` or `play all`
         - Help: `help`
         - Exit: `exit`
+        
+        ✨ NEW! Parallel Generation - Start multiple tracks at once! ✨
+        - Check status: `status`
+        - Cancel task: `cancel task_id`
         
         Tracks are automatically loaded into Ableton Live when created or updated!
         """
@@ -94,6 +174,16 @@ class MusicFlowCLI:
           Example: `update bass: extend to 16 bars with more variation`
         
         - `list` - List all currently generated tracks
+        
+        ## Parallel Generation
+        
+        MusicFlow now supports parallel track generation! You can:
+        - Start multiple track generations and updates at the same time
+        - Continue using the app while tracks are being generated
+        - Check the status of all running tasks
+        
+        - `status` or `tasks` - Show status of currently running tasks
+        - `cancel [task_id]` - Cancel a running task by its ID
         
         ## Ableton Live Integration
         
@@ -129,10 +219,16 @@ class MusicFlowCLI:
             self.help()
         elif user_input.lower() == "list":
             self.list_tracks()
+        elif user_input.lower() == "status" or user_input.lower() == "tasks":
+            self.show_tasks_status()
+        elif user_input.lower().startswith("cancel "):
+            task_id = user_input[7:].strip()
+            self.cancel_task(task_id)
         elif user_input.lower() == "exit" or user_input.lower() == "quit":
             if self.ableton_connected:
                 self.console.print("Disconnecting from Ableton Live...")
                 run_async(self.ableton.disconnect)
+            self.midi_generator.shutdown()
             self.running = False
         elif user_input.lower().startswith("generate"):
             parts = user_input[8:].strip().split(":", 1)
@@ -197,7 +293,13 @@ class MusicFlowCLI:
             context_table.add_column("Description", style="green")
             
             for track in existing_tracks:
-                track_data = self.midi_generator.tracks[track]
+                # Get track data safely
+                track_data = {}
+                try:
+                    track_data = self.midi_generator.tracks.get(track, {})
+                except Exception:
+                    pass
+                
                 context_table.add_row(
                     track,
                     str(track_data.get("bpm", 120)),
@@ -209,24 +311,21 @@ class MusicFlowCLI:
             self.console.print(context_table)
             self.console.print("[italic]New track will be generated to complement these existing tracks.[/italic]\n")
         
-        with self.console.status("Generating MIDI..."):
-            result = self.midi_generator.generate_track(prompt, track_name)
+        # Start task in background
+        self.console.print("[bold]Starting generation in background...[/bold]")
+        task_id = self.midi_generator.generate_track_async(
+            prompt=prompt, 
+            track_name=track_name,
+            callback=self._on_task_complete
+        )
         
-        if "error" in result:
-            self.console.print(f"[bold red]Error:[/bold red] {result['error']}")
-            return
+        # Tell user their task is running
+        self.console.print(f"[bold cyan]Task started:[/bold cyan] {task_id}")
+        self.console.print("[italic]You can continue using MusicFlow while generation happens in the background.[/italic]")
+        self.console.print("[italic]Type 'status' to check on running tasks.[/italic]")
         
-        self.console.print(f"[bold green]✓[/bold green] Created {result['track_name']} track")
-        self.console.print(f"[bold]MIDI file:[/bold] {result['midi_file']}")
-        self.console.print(f"[bold]BPM:[/bold] {result['details'].get('bpm', 120)}")
-        self.console.print(f"[bold]Time Signature:[/bold] {result['details'].get('time_signature', '4/4')}")
-        self.console.print(f"[bold]Clip Length:[/bold] {result['details'].get('clip_length', 4)} bars")
-        self.console.print(f"[bold]Description:[/bold] {result['details'].get('description', 'No description')}")
-        
-        # If Ableton is connected, automatically load the track
-        if self.ableton_connected:
-            self.console.print("\nAutomatically loading track into Ableton Live...")
-            self.load_track_to_ableton(result['track_name'])
+        # Show status
+        self.show_tasks_status()
     
     def update_track(self, track_name: str, prompt: str):
         """Update an existing MIDI track"""
@@ -235,6 +334,13 @@ class MusicFlowCLI:
         if track_name not in tracks:
             self.console.print(f"[bold red]Error:[/bold red] Track '{track_name}' does not exist.")
             self.console.print(f"Available tracks: {', '.join(tracks) if tracks else 'None'}")
+            return
+        
+        # Check if track is already being updated
+        if self.midi_generator.is_track_generating(track_name):
+            self.console.print(f"[bold yellow]Warning:[/bold yellow] Track '{track_name}' is already being generated/updated.")
+            self.console.print("You can cancel the current task with 'cancel [task_id]'")
+            self.show_tasks_status()
             return
         
         self.console.print(f"[bold green]Updating {track_name} with prompt:[/bold green] {prompt}")
@@ -275,24 +381,40 @@ class MusicFlowCLI:
             self.console.print(context_table)
             self.console.print("[italic]Update will maintain compatibility with these tracks.[/italic]\n")
         
-        with self.console.status("Updating MIDI..."):
-            result = self.midi_generator.update_track(track_name, prompt)
+        # Start task in background
+        self.console.print("[bold]Starting update in background...[/bold]")
+        task_id = self.midi_generator.update_track_async(
+            track_name=track_name, 
+            prompt=prompt,
+            callback=self._on_task_complete
+        )
         
-        if "error" in result:
-            self.console.print(f"[bold red]Error:[/bold red] {result['error']}")
-            return
+        # Tell user their task is running
+        self.console.print(f"[bold cyan]Task started:[/bold cyan] {task_id}")
+        self.console.print("[italic]You can continue using MusicFlow while update happens in the background.[/italic]")
+        self.console.print("[italic]Type 'status' to check on running tasks.[/italic]")
         
-        self.console.print(f"[bold green]✓[/bold green] Updated {result['track_name']} track")
-        self.console.print(f"[bold]MIDI file:[/bold] {result['midi_file']}")
-        self.console.print(f"[bold]BPM:[/bold] {result['details'].get('bpm', 120)}")
-        self.console.print(f"[bold]Time Signature:[/bold] {result['details'].get('time_signature', '4/4')}")
-        self.console.print(f"[bold]Clip Length:[/bold] {result['details'].get('clip_length', 4)} bars")
-        self.console.print(f"[bold]Description:[/bold] {result['details'].get('description', 'No description')}")
-        
-        # If Ableton is connected, automatically reload the track
-        if self.ableton_connected:
-            self.console.print("\nAutomatically reloading track in Ableton Live...")
-            self.load_track_to_ableton(result['track_name'])
+        # Show status
+        self.show_tasks_status()
+    
+    def show_tasks_status(self):
+        """Show status of running tasks"""
+        status_table = self._build_task_status_table()
+        if status_table:
+            self.console.print(status_table)
+        else:
+            self.console.print("[yellow]No active tasks[/yellow]")
+    
+    def cancel_task(self, task_id: str):
+        """Cancel a running task"""
+        result = self.midi_generator.cancel_task(task_id)
+        if result:
+            self.console.print(f"[bold green]Cancelled task:[/bold green] {task_id}")
+        else:
+            self.console.print(f"[bold red]Error:[/bold red] Task '{task_id}' not found or already completed")
+            
+        # Show updated status
+        self.show_tasks_status()
     
     def list_tracks(self):
         """List all currently generated tracks"""
@@ -567,12 +689,24 @@ class MusicFlowCLI:
         
         return WordCompleter(commands, ignore_case=True)
         
+    def _check_pending_notifications(self):
+        """Check and display any pending notifications"""
+        with self.task_status_lock:
+            if self.pending_notifications:
+                self.console.print("\n")  # Add some space
+                for notification in self.pending_notifications:
+                    self.console.print(notification)
+                self.pending_notifications.clear()
+    
     def run(self):
         """Run the CLI interface"""
         self.welcome()
         
         while self.running:
             try:
+                # Check for task updates
+                self._check_pending_notifications()
+                
                 # Get dynamic completer with current track names
                 dynamic_completer = self._get_dynamic_completer()
                 
@@ -597,6 +731,8 @@ class MusicFlowCLI:
                 self.running = False
                 break
         
+        # Clean up any background tasks
+        self.midi_generator.shutdown()
         self.console.print("[bold]Thanks for using MusicFlow![/bold]")
 
 
